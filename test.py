@@ -268,7 +268,7 @@ def attention_ref(
 @pytest.mark.parametrize("seq_len_k", [4096])
 @pytest.mark.parametrize("num_heads", [4])
 @pytest.mark.parametrize("head_dim", [4])
-@pytest.mark.parametrize("causal", [True])
+@pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("varlen", [False, True])
 def test_flash_self_attention(batch_size, seq_len_q, seq_len_k, num_heads, head_dim, causal, varlen):
     q = torch.randn(batch_size, seq_len_q, num_heads, head_dim, dtype=torch.float16).to(BACKEND)
@@ -280,21 +280,32 @@ def test_flash_self_attention(batch_size, seq_len_q, seq_len_k, num_heads, head_
         v_ref = v.detach().clone().to("cpu")
         out_ref = attention_ref(q, k, v, causal=causal)
         if BACKEND == "npu":
-            atten_mask_npu = (
-                torch.from_numpy(np.triu(np.ones([2048, 2048]), k=1))
-                .bool()
-                .to(torch.device("npu"))
-            )
-            out = npu_fusion_attention(
-                q, 
-                k, 
-                v, 
-                num_heads, 
-                "BSND", 
-                scale = 1.0 / math.sqrt(q.shape[-1]),
-                atten_mask=atten_mask_npu, 
-                sparse_mode=3,
-            )[0]
+            if causal:
+                atten_mask_npu = (
+                    torch.from_numpy(np.triu(np.ones([2048, 2048]), k=1))
+                    .bool()
+                    .to(torch.device("npu"))
+                )
+                out = npu_fusion_attention(
+                    q, 
+                    k, 
+                    v, 
+                    num_heads, 
+                    "BSND", 
+                    scale = 1.0 / math.sqrt(q.shape[-1]),
+                    atten_mask=atten_mask_npu, 
+                    sparse_mode=3,
+                )[0]
+            else:
+                out = npu_fusion_attention(
+                    q, 
+                    k, 
+                    v, 
+                    num_heads, 
+                    "BSND", 
+                    scale = 1.0 / math.sqrt(q.shape[-1]),
+                    sparse_mode=0,
+                )[0]
         elif BACKEND == "cuda":
             out = flash_attn_func(q, k, v, causal=causal)
         print(f"Output max diff: {(out - out_ref.to(BACKEND)).abs().max().item()}")
@@ -308,24 +319,37 @@ def test_flash_self_attention(batch_size, seq_len_q, seq_len_k, num_heads, head_
             q, k, v, key_padding_mask, key_padding_mask
         )
         if BACKEND == "npu":
-            atten_mask_npu = (
-                torch.from_numpy(np.triu(np.ones([2048, 2048]), k=1))
-                .bool()
-                .to(torch.device("npu"))
-            )
-            print(q_unpad, k_unpad, cu_seqlens_q, cu_seqlens_k)
-            out_unpad = npu_fusion_attention(
-                q_unpad, 
-                k_unpad, 
-                v_unpad, 
-                num_heads, 
-                "TND", 
-                actual_seq_qlen=tuple(cu_seqlens_q[1:].cpu().numpy().tolist()),
-                actual_seq_kvlen=tuple(cu_seqlens_k[1:].cpu().numpy().tolist()),
-                scale = 1.0 / math.sqrt(q_unpad.shape[-1]),
-                atten_mask=atten_mask_npu, 
-                sparse_mode=3,
-            )[0]
+            if causal:
+                atten_mask_npu = (
+                    torch.from_numpy(np.triu(np.ones([2048, 2048]), k=1))
+                    .bool()
+                    .to(torch.device("npu"))
+                )
+                print(q_unpad, k_unpad, cu_seqlens_q, cu_seqlens_k)
+                out_unpad = npu_fusion_attention(
+                    q_unpad, 
+                    k_unpad, 
+                    v_unpad, 
+                    num_heads, 
+                    "TND", 
+                    actual_seq_qlen=tuple(cu_seqlens_q[1:].cpu().numpy().tolist()),
+                    actual_seq_kvlen=tuple(cu_seqlens_k[1:].cpu().numpy().tolist()),
+                    scale = 1.0 / math.sqrt(q_unpad.shape[-1]),
+                    atten_mask=atten_mask_npu, 
+                    sparse_mode=3,
+                )[0]
+            else:
+                out_unpad = npu_fusion_attention(
+                    q_unpad, 
+                    k_unpad, 
+                    v_unpad, 
+                    num_heads, 
+                    "TND", 
+                    actual_seq_qlen=tuple(cu_seqlens_q[1:].cpu().numpy().tolist()),
+                    actual_seq_kvlen=tuple(cu_seqlens_k[1:].cpu().numpy().tolist()),
+                    scale = 1.0 / math.sqrt(q_unpad.shape[-1]),
+                    sparse_mode=0,
+                )[0]
         else:
             out_unpad = flash_attn_varlen_func(
                 q_unpad, 
